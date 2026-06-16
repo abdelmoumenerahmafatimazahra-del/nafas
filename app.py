@@ -1,25 +1,20 @@
 # ============================================================
-#  🌬️ NAFAS — E-commerce configurable (v1.0)
-#  ✓ Titre d'accueil + identité + description modifiables
-#  ✓ Accès vendeur secret ✓ Sauvegarde ✓ Commandes ✓ Livraison
+#  🌬️ NAFAS — E-commerce v2.0 (Google Sheets persistance)
+#  ✓ Stockage permanent ✓ Titre+identité+description éditables
+#  ✓ Accès vendeur secret ✓ Commandes ✓ Livraison par wilaya
 # ============================================================
 import streamlit as st
 import base64, os, json
 from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="NAFAS — Ma Boutique", page_icon="🌿",
                    layout="wide", initial_sidebar_state="expanded")
 
-# ─────────────────────────────────────────────
-#  PARAMÈTRES  (à personnaliser avant de livrer)
-# ─────────────────────────────────────────────
-VENDOR_PASSWORD = "nafas2024"          # 🔑 mot de passe vendeur
-VENDOR_URL_KEY  = "nafas"              # 🔗 lien secret : .../?v=nafas
-DATA_DIR = "/content/drive/MyDrive/NAFAS" if os.path.isdir("/content/drive/MyDrive/NAFAS") else "."
-PRODUCTS_FILE = os.path.join(DATA_DIR, "produits.json")
-ORDERS_FILE   = os.path.join(DATA_DIR, "commandes.json")
-DELIVERY_FILE = os.path.join(DATA_DIR, "livraison.json")
-SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+VENDOR_PASSWORD = "nafas2024"
+VENDOR_URL_KEY  = "nafas"
+SHEET_NAME      = "NAFAS_DB"
 
 WILAYAS = [
  "01 Adrar","02 Chlef","03 Laghouat","04 Oum El Bouaghi","05 Batna","06 Béjaïa",
@@ -33,51 +28,6 @@ WILAYAS = [
  "48 Relizane","49 El M'Ghair","50 El Meniaa","51 Ouled Djellal","52 Bordj Badji Mokhtar",
  "53 Béni Abbès","54 Timimoun","55 Touggourt","56 Djanet","57 In Salah","58 In Guezzam",
 ]
-
-# ─────────────────────────────────────────────
-#  SAUVEGARDE / CHARGEMENT
-# ─────────────────────────────────────────────
-def load_json(path, default):
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return default
-    return default
-
-def save_products():
-    with open(PRODUCTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(st.session_state.products, f, ensure_ascii=False, indent=2)
-
-def save_order(order):
-    orders = load_json(ORDERS_FILE, [])
-    orders.append(order)
-    with open(ORDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(orders, f, ensure_ascii=False, indent=2)
-
-def load_delivery():
-    data = load_json(DELIVERY_FILE, None)
-    if data and "prices" in data:
-        prices = {w: int(data["prices"].get(w, 500)) for w in WILAYAS}
-        return prices, int(data.get("threshold", 5000))
-    return {w: 500 for w in WILAYAS}, 5000
-
-def save_delivery():
-    with open(DELIVERY_FILE, "w", encoding="utf-8") as f:
-        json.dump({"prices": st.session_state.delivery,
-                   "threshold": st.session_state.free_threshold},
-                  f, ensure_ascii=False, indent=2)
-
-def save_settings():
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"name": st.session_state.shop_name,
-                   "slogan": st.session_state.shop_slogan,
-                   "description": st.session_state.shop_description,
-                   "hero_main": st.session_state.shop_hero_main,
-                   "hero_accent": st.session_state.shop_hero_accent,
-                   "logo_b64": st.session_state.shop_logo},
-                  f, ensure_ascii=False, indent=2)
 
 # ─────────────────────────────────────────────
 #  CSS
@@ -125,109 +75,213 @@ html,.stApp{background:var(--ivory); font-family:'Lato',sans-serif; color:var(--
 </style>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-#  SESSION STATE  (charge l'identité sauvegardée)
+#  GOOGLE SHEETS — connexion & fonctions
 # ─────────────────────────────────────────────
-_settings = load_json(SETTINGS_FILE, {})
+@st.cache_resource
+def get_gsheet():
+    scope = ["https://spreadsheets.google.com/feeds",
+             "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=scope)
+    gc = gspread.authorize(creds)
+    return gc.open(SHEET_NAME)
 
-if "shop_name" not in st.session_state:
-    st.session_state.shop_name = _settings.get("name", "NAFAS")
-if "shop_slogan" not in st.session_state:
-    st.session_state.shop_slogan = _settings.get("slogan", "Respirez la nature, vivez l'harmonie")
-if "shop_hero_main" not in st.session_state:
-    st.session_state.shop_hero_main = _settings.get("hero_main", "La nature, source de")
-if "shop_hero_accent" not in st.session_state:
-    st.session_state.shop_hero_accent = _settings.get("hero_accent", "bien-être")
+def _ws(name, rows=500, cols=20):
+    sh = get_gsheet()
+    titles = [w.title for w in sh.worksheets()]
+    return sh.worksheet(name) if name in titles else sh.add_worksheet(title=name, rows=rows, cols=cols)
+
+def load_products():
+    try:
+        data = _ws("produits").get_all_records()
+        return [{
+            "id": int(r.get("id",0)),
+            "name": str(r.get("name","")),
+            "category": str(r.get("category","Général")),
+            "price": int(r.get("price",0) or 0),
+            "emoji": str(r.get("emoji","🌿")),
+            "volume": str(r.get("volume","")),
+            "description": str(r.get("description","")),
+            "img_b64": str(r.get("img_b64","")) or None,
+        } for r in data if r.get("id")]
+    except Exception:
+        return []
+
+def save_products():
+    try:
+        ws = _ws("produits")
+        ws.clear()
+        rows = [["id","name","category","price","emoji","volume","description","img_b64"]]
+        rows += [[p["id"],p["name"],p["category"],p["price"],
+                  p["emoji"],p["volume"],p["description"],
+                  (p.get("img_b64") or "")[:45000]]
+                 for p in st.session_state.products]
+        ws.update(rows)
+    except Exception as e:
+        st.warning(f"⚠️ Erreur produits : {e}")
+
+def save_order(order):
+    try:
+        ws = _ws("commandes", rows=1000, cols=10)
+        vals = ws.get_all_values()
+        if not vals or vals[0][0] != "date":
+            ws.insert_row(["date","nom","tel","adresse","wilaya",
+                           "payment","items","subtotal","delivery_fee","total"], 1)
+        ws.append_row([
+            order.get("date",""), order.get("nom",""), order.get("tel",""),
+            order.get("adresse",""), order.get("wilaya",""), order.get("payment",""),
+            json.dumps(order.get("items",[]), ensure_ascii=False),
+            order.get("subtotal",0), order.get("delivery_fee",0), order.get("total",0),
+        ])
+    except Exception as e:
+        st.warning(f"⚠️ Erreur commande : {e}")
+
+def load_orders():
+    try:
+        data = _ws("commandes", rows=1000, cols=10).get_all_records()
+        result = []
+        for r in data:
+            if not r.get("date"): continue
+            try: items = json.loads(r.get("items","[]"))
+            except: items = []
+            result.append({
+                "date": str(r.get("date","")), "nom": str(r.get("nom","")),
+                "tel": str(r.get("tel","")), "adresse": str(r.get("adresse","")),
+                "wilaya": str(r.get("wilaya","")), "payment": str(r.get("payment","")),
+                "items": items,
+                "subtotal": int(r.get("subtotal",0) or 0),
+                "delivery_fee": int(r.get("delivery_fee",0) or 0),
+                "total": int(r.get("total",0) or 0),
+            })
+        return result
+    except Exception:
+        return []
+
+def load_delivery():
+    try:
+        data = _ws("livraison").get_all_records()
+        prices = {w: 500 for w in WILAYAS}
+        threshold = 5000
+        for r in data:
+            w = str(r.get("wilaya",""))
+            p = r.get("prix",500)
+            if w == "__threshold__": threshold = int(p or 5000)
+            elif w in prices: prices[w] = int(p or 500)
+        return prices, threshold
+    except Exception:
+        return {w: 500 for w in WILAYAS}, 5000
+
+def save_delivery():
+    try:
+        ws = _ws("livraison")
+        ws.clear()
+        rows = [["wilaya","prix"], ["__threshold__", st.session_state.free_threshold]]
+        rows += [[w, st.session_state.delivery.get(w,500)] for w in WILAYAS]
+        ws.update(rows)
+    except Exception as e:
+        st.warning(f"⚠️ Erreur livraison : {e}")
+
+def load_settings():
+    try:
+        data = _ws("settings", rows=20, cols=2).get_all_records()
+        return {str(r["key"]): str(r["value"]) for r in data if r.get("key")}
+    except Exception:
+        return {}
+
+def save_settings():
+    try:
+        ws = _ws("settings", rows=20, cols=2)
+        ws.clear()
+        ws.update([
+            ["key","value"],
+            ["name",        st.session_state.shop_name],
+            ["slogan",      st.session_state.shop_slogan],
+            ["hero_main",   st.session_state.shop_hero_main],
+            ["hero_accent", st.session_state.shop_hero_accent],
+            ["description", st.session_state.shop_description],
+        ])
+    except Exception as e:
+        st.warning(f"⚠️ Erreur paramètres : {e}")
+
+# ─────────────────────────────────────────────
+#  SESSION STATE
+# ─────────────────────────────────────────────
+_s = load_settings()
+if "shop_name"        not in st.session_state: st.session_state.shop_name        = _s.get("name","NAFAS")
+if "shop_slogan"      not in st.session_state: st.session_state.shop_slogan      = _s.get("slogan","Respirez la nature, vivez l'harmonie")
+if "shop_hero_main"   not in st.session_state: st.session_state.shop_hero_main   = _s.get("hero_main","La nature, source de")
+if "shop_hero_accent" not in st.session_state: st.session_state.shop_hero_accent = _s.get("hero_accent","bien-être")
 if "shop_description" not in st.session_state:
-    st.session_state.shop_description = _settings.get("description",
+    st.session_state.shop_description = _s.get("description",
         "Bienvenue chez NAFAS 🌿\n\n"
-        "Nous proposons des produits naturels d'aromathérapie et de bien-être, "
-        "sélectionnés avec soin pour prendre soin de votre corps et de votre esprit. "
-        "Huiles essentielles, tisanes, soins naturels… respirez la nature, vivez l'harmonie.")
-
+        "Nous vous proposons une gamme de produits naturels dédiés à l'aromathérapie "
+        "et au bien-être, soigneusement élaborés à partir de plantes aromatiques naturelles.\n"
+        "Découvrez nos bougies aromatisées, suspensions parfumées et baumes aromathérapeutiques, "
+        "pensés pour vous offrir une expérience de douceur, d'harmonie et de relaxation au quotidien.\n"
+        "Respirez la nature, vivez l'harmonie.")
 if "shop_logo" not in st.session_state:
-    if _settings.get("logo_b64"):
-        st.session_state.shop_logo = _settings["logo_b64"]
-    elif os.path.exists("logo.png"):
-        with open("logo.png", "rb") as f:
+    if os.path.exists("logo.png"):
+        with open("logo.png","rb") as f:
             st.session_state.shop_logo = base64.b64encode(f.read()).decode()
     else:
         st.session_state.shop_logo = None
-
-if "products" not in st.session_state:
-    st.session_state.products = load_json(PRODUCTS_FILE, [])
-if "next_id" not in st.session_state:
-    st.session_state.next_id = max([p["id"] for p in st.session_state.products], default=0) + 1
-if "delivery" not in st.session_state:
-    st.session_state.delivery, st.session_state.free_threshold = load_delivery()
-
-if "cart" not in st.session_state: st.session_state.cart = {}
-if "page" not in st.session_state: st.session_state.page = "🏠 Accueil"
+if "products"        not in st.session_state: st.session_state.products        = load_products()
+if "next_id"         not in st.session_state: st.session_state.next_id         = max([p["id"] for p in st.session_state.products], default=0)+1
+if "delivery"        not in st.session_state: st.session_state.delivery, st.session_state.free_threshold = load_delivery()
+if "cart"            not in st.session_state: st.session_state.cart            = {}
+if "page"            not in st.session_state: st.session_state.page            = "🏠 Accueil"
 if "order_confirmed" not in st.session_state: st.session_state.order_confirmed = False
-if "order_data" not in st.session_state: st.session_state.order_data = None
+if "order_data"      not in st.session_state: st.session_state.order_data      = None
 if "vendor_unlocked" not in st.session_state: st.session_state.vendor_unlocked = False
 
 # ─────────────────────────────────────────────
 #  HELPERS
 # ─────────────────────────────────────────────
-def get_product(pid): return next((p for p in st.session_state.products if p["id"] == pid), None)
+def get_product(pid): return next((p for p in st.session_state.products if p["id"]==pid), None)
 def cart_count(): return sum(st.session_state.cart.values())
-def cart_total():
-    return sum(get_product(pid)["price"] * qty
-               for pid, qty in st.session_state.cart.items() if get_product(pid))
-def add_to_cart(pid): st.session_state.cart[pid] = st.session_state.cart.get(pid, 0) + 1
-def remove_item(pid): st.session_state.cart.pop(pid, None)
-def set_qty(pid, qty):
-    if qty <= 0: remove_item(pid)
-    else: st.session_state.cart[pid] = qty
+def cart_total(): return sum(get_product(pid)["price"]*qty for pid,qty in st.session_state.cart.items() if get_product(pid))
+def add_to_cart(pid): st.session_state.cart[pid] = st.session_state.cart.get(pid,0)+1
+def remove_item(pid): st.session_state.cart.pop(pid,None)
+def set_qty(pid,qty):
+    if qty<=0: remove_item(pid)
+    else: st.session_state.cart[pid]=qty
 def file_to_b64(f): return base64.b64encode(f.read()).decode() if f else None
 def thumb_html(p):
-    if p.get("img_b64"):
-        return f'<img src="data:image/png;base64,{p["img_b64"]}">'
-    return p.get("emoji", "🌿")
+    if p.get("img_b64"): return f'<img src="data:image/png;base64,{p["img_b64"]}">'
+    return p.get("emoji","🌿")
 
 # ─────────────────────────────────────────────
 #  SIDEBAR
 # ─────────────────────────────────────────────
 with st.sidebar:
     logo = st.session_state.shop_logo
-    logo_html = (f'<img src="data:image/png;base64,{logo}" style="width:72px;height:72px;'
-                 f'object-fit:contain;margin-bottom:8px;">' if logo else
-                 '<div style="font-size:2.4em;margin-bottom:8px;">🌿</div>')
+    logo_html = (f'<img src="data:image/png;base64,{logo}" style="width:72px;height:72px;object-fit:contain;margin-bottom:8px;">'
+                 if logo else '<div style="font-size:2.4em;margin-bottom:8px;">🌿</div>')
     st.markdown(f"""
-    <div style="padding:26px 20px 22px; text-align:center;">
+    <div style="padding:26px 20px 22px;text-align:center;">
         {logo_html}
-        <div style="font-family:'Playfair Display',serif; color:#1E3A14;
-                    font-size:1.35em; font-weight:700;">{st.session_state.shop_name}</div>
-        <div style="font-size:0.64em; letter-spacing:2px; color:#5A8A3C;
-                    font-weight:700; margin-top:4px;">{st.session_state.shop_slogan}</div>
+        <div style="font-family:'Playfair Display',serif;color:#1E3A14;font-size:1.35em;font-weight:700;">{st.session_state.shop_name}</div>
+        <div style="font-size:0.64em;letter-spacing:2px;color:#5A8A3C;font-weight:700;margin-top:4px;">{st.session_state.shop_slogan}</div>
     </div>
-    <hr style="border:none; border-top:1px solid #C5D8B0; margin:0 16px 16px;">
+    <hr style="border:none;border-top:1px solid #C5D8B0;margin:0 16px 16px;">
     """, unsafe_allow_html=True)
-
     n = cart_count()
-    nav = ["🏠 Accueil", "🌱 Catalogue", f"🛒 Panier ({n})"]
-    if st.session_state.vendor_unlocked:
-        nav += ["⚙️ Espace Vendeur", "📩 Commandes"]
+    nav = ["🏠 Accueil","🌱 Catalogue",f"🛒 Panier ({n})"]
+    if st.session_state.vendor_unlocked: nav += ["⚙️ Espace Vendeur","📩 Commandes"]
     st.session_state.page = st.radio("nav", nav, label_visibility="collapsed")
-
-    show_access = (st.query_params.get("v") == VENDOR_URL_KEY) or st.session_state.vendor_unlocked
+    show_access = (st.query_params.get("v")==VENDOR_URL_KEY) or st.session_state.vendor_unlocked
     if show_access:
-        st.markdown("<hr style='border:none; border-top:1px solid #C5D8B0; margin:18px 16px;'>", unsafe_allow_html=True)
+        st.markdown("<hr style='border:none;border-top:1px solid #C5D8B0;margin:18px 16px;'>", unsafe_allow_html=True)
         with st.expander("🔒 Accès vendeur", expanded=not st.session_state.vendor_unlocked):
             if st.session_state.vendor_unlocked:
                 st.success("✅ Connecté en mode vendeur")
                 if st.button("🚪 Se déconnecter"):
-                    st.session_state.vendor_unlocked = False
-                    st.session_state.page = "🏠 Accueil"
-                    st.rerun()
+                    st.session_state.vendor_unlocked=False; st.session_state.page="🏠 Accueil"; st.rerun()
             else:
                 pwd = st.text_input("Mot de passe", type="password", key="vendor_pwd")
                 if st.button("Entrer"):
-                    if pwd == VENDOR_PASSWORD:
-                        st.session_state.vendor_unlocked = True
-                        st.rerun()
-                    else:
-                        st.error("❌ Mot de passe incorrect")
+                    if pwd==VENDOR_PASSWORD: st.session_state.vendor_unlocked=True; st.rerun()
+                    else: st.error("❌ Mot de passe incorrect")
 
 # ═════════════════════════════════════════════
 #  PAGE — ESPACE VENDEUR
@@ -235,109 +289,86 @@ with st.sidebar:
 if "Espace Vendeur" in st.session_state.page:
     st.markdown("""<div class="sec-eyebrow">Configuration</div>
     <div class="sec-title">⚙️ Espace Vendeur</div><div class="sec-rule"></div>""", unsafe_allow_html=True)
-    st.info("Configurez votre boutique. Pensez à cliquer sur Enregistrer après vos modifications.")
-
-    # ── 🏷️ IDENTITÉ, TITRE & DESCRIPTION ──
+    st.info("💾 Toutes vos modifications sont sauvegardées dans Google Sheets — elles ne s'effaceront jamais !")
     st.markdown("### 🏷️ Identité & page d'accueil")
-    c1, c2 = st.columns(2)
+    c1,c2 = st.columns(2)
     with c1:
-        st.session_state.shop_name = st.text_input("Nom de la boutique", st.session_state.shop_name)
+        st.session_state.shop_name   = st.text_input("Nom de la boutique", st.session_state.shop_name)
         st.session_state.shop_slogan = st.text_input("Slogan", st.session_state.shop_slogan)
     with c2:
-        up_logo = st.file_uploader("Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
-        if up_logo:
-            st.session_state.shop_logo = file_to_b64(up_logo)
-        if st.session_state.shop_logo:
-            st.image(base64.b64decode(st.session_state.shop_logo), width=90)
-
+        up_logo = st.file_uploader("Logo (PNG/JPG)", type=["png","jpg","jpeg"])
+        if up_logo: st.session_state.shop_logo = file_to_b64(up_logo)
+        if st.session_state.shop_logo: st.image(base64.b64decode(st.session_state.shop_logo), width=90)
     st.markdown("**🖼️ Grand titre de la page d'accueil**")
-    h1, h2 = st.columns([2, 1])
-    with h1:
-        st.session_state.shop_hero_main = st.text_input(
-            "Titre principal", st.session_state.shop_hero_main,
-            help="La grande phrase affichée sur l'accueil.")
-    with h2:
-        st.session_state.shop_hero_accent = st.text_input(
-            "Mot en valeur (couleur ambre)", st.session_state.shop_hero_accent)
+    h1,h2 = st.columns([2,1])
+    with h1: st.session_state.shop_hero_main   = st.text_input("Titre principal", st.session_state.shop_hero_main)
+    with h2: st.session_state.shop_hero_accent = st.text_input("Mot en valeur (ambre)", st.session_state.shop_hero_accent)
     st.caption(f"Aperçu : {st.session_state.shop_hero_main} *{st.session_state.shop_hero_accent}*.")
-
     st.session_state.shop_description = st.text_area(
-        "📝 Description de la boutique (texte affiché sur l'accueil)",
-        st.session_state.shop_description, height=160,
-        help="Présentez votre boutique : qui vous êtes, ce que vous vendez, vos valeurs…")
-
-    if st.button("💾 Enregistrer l'identité de la boutique"):
-        save_settings()
-        st.success("✅ Identité, titre & description enregistrés !")
-
+        "📝 Description de la boutique", st.session_state.shop_description, height=160)
+    if st.button("💾 Enregistrer l'identité"):
+        save_settings(); st.success("✅ Identité enregistrée dans Google Sheets !")
     st.markdown("---")
     st.markdown("### ➕ Ajouter un produit")
     with st.form("add_product", clear_on_submit=True):
-        a, b = st.columns(2)
+        a,b = st.columns(2)
         with a:
-            name = st.text_input("Nom du produit *")
-            category = st.text_input("Catégorie", "Général")
-            price = st.number_input("Prix (DA) *", min_value=0, step=50)
+            name     = st.text_input("Nom du produit *")
+            category = st.text_input("Catégorie","Général")
+            price    = st.number_input("Prix (DA) *", min_value=0, step=50)
         with b:
-            emoji = st.text_input("Emoji (si pas de photo)", "🌿")
-            volume = st.text_input("Volume / format", "")
-            img = st.file_uploader("Photo produit (optionnel)", type=["png", "jpg", "jpeg"])
+            emoji  = st.text_input("Emoji","🌿")
+            volume = st.text_input("Volume / format","")
+            img    = st.file_uploader("Photo (optionnel)", type=["png","jpg","jpeg"])
         desc = st.text_area("Description")
         if st.form_submit_button("✨ Ajouter le produit"):
-            if not name.strip() or price <= 0:
-                st.error("⚠️ Le nom et un prix valide sont obligatoires.")
+            if not name.strip() or price<=0:
+                st.error("⚠️ Nom et prix obligatoires.")
             else:
                 st.session_state.products.append({
-                    "id": st.session_state.next_id, "name": name.strip(),
-                    "category": category.strip() or "Général", "price": int(price),
-                    "emoji": emoji.strip() or "🌿", "volume": volume.strip(),
-                    "description": desc.strip(), "img_b64": file_to_b64(img),
+                    "id":st.session_state.next_id, "name":name.strip(),
+                    "category":category.strip() or "Général", "price":int(price),
+                    "emoji":emoji.strip() or "🌿", "volume":volume.strip(),
+                    "description":desc.strip(), "img_b64":file_to_b64(img),
                 })
-                st.session_state.next_id += 1
+                st.session_state.next_id+=1
                 save_products()
-                st.success(f"🌿 « {name} » ajouté et sauvegardé !")
+                st.success(f"🌿 « {name} » ajouté et sauvegardé dans Google Sheets !")
                 st.rerun()
-
     st.markdown(f"### 📦 Mes produits ({len(st.session_state.products)})")
-    if not st.session_state.products:
-        st.warning("Aucun produit pour l'instant.")
+    if not st.session_state.products: st.warning("Aucun produit pour l'instant.")
     for p in st.session_state.products:
-        col1, col2, col3 = st.columns([0.5, 4, 1])
-        col1.markdown(f"<div style='font-size:1.8em'>{p['emoji']}</div>", unsafe_allow_html=True)
-        col2.markdown(f"**{p['name']}** — {p['price']:,} DA  \n<span style='color:#7A7A6A;font-size:.85em'>{p['category']}</span>", unsafe_allow_html=True)
-        if col3.button("🗑️", key=f"del_{p['id']}"):
-            st.session_state.products = [x for x in st.session_state.products if x["id"] != p["id"]]
-            st.session_state.cart.pop(p["id"], None)
-            save_products()
-            st.rerun()
-
-    # ── 🚚 LIVRAISON PAR WILAYA ──
+        c1,c2,c3 = st.columns([0.5,4,1])
+        c1.markdown(f"<div style='font-size:1.8em'>{p['emoji']}</div>", unsafe_allow_html=True)
+        c2.markdown(f"**{p['name']}** — {p['price']:,} DA  \n<span style='color:#7A7A6A;font-size:.85em'>{p['category']}</span>", unsafe_allow_html=True)
+        if c3.button("🗑️", key=f"del_{p['id']}"):
+            st.session_state.products=[x for x in st.session_state.products if x["id"]!=p["id"]]
+            st.session_state.cart.pop(p["id"],None)
+            save_products(); st.rerun()
     st.markdown("---")
     st.markdown("### 🚚 Frais de livraison par wilaya")
     st.session_state.free_threshold = st.number_input(
-        "🎁 Livraison gratuite à partir de (DA) — mettez 0 pour désactiver",
+        "🎁 Livraison gratuite à partir de (DA) — 0 pour désactiver",
         min_value=0, step=500, value=int(st.session_state.free_threshold))
-    st.caption("Modifiez le prix de chaque wilaya dans le tableau puis cliquez sur Enregistrer.")
-    rows = [{"Wilaya": w, "Prix (DA)": int(st.session_state.delivery.get(w, 500))} for w in WILAYAS]
+    rows = [{"Wilaya":w,"Prix (DA)":int(st.session_state.delivery.get(w,500))} for w in WILAYAS]
     edited = st.data_editor(rows, hide_index=True, use_container_width=True,
                             disabled=["Wilaya"], height=380, key="delivery_editor")
     if st.button("💾 Enregistrer les frais de livraison"):
-        st.session_state.delivery = {r["Wilaya"]: int(r["Prix (DA)"] or 0) for r in edited}
-        save_delivery()
-        st.success("✅ Frais de livraison enregistrés !")
+        st.session_state.delivery={r["Wilaya"]:int(r["Prix (DA)"] or 0) for r in edited}
+        save_delivery(); st.success("✅ Frais enregistrés dans Google Sheets !")
 
 # ═════════════════════════════════════════════
-#  PAGE — COMMANDES (vendeur)
+#  PAGE — COMMANDES
 # ═════════════════════════════════════════════
 elif "Commandes" in st.session_state.page:
     st.markdown("""<div class="sec-eyebrow">Suivi des ventes</div>
     <div class="sec-title">📩 Commandes reçues</div><div class="sec-rule"></div>""", unsafe_allow_html=True)
-    orders = load_json(ORDERS_FILE, [])
+    orders = load_orders()
     if not orders:
         st.info("Aucune commande pour l'instant.")
     else:
         ca = sum(o["total"] for o in orders)
-        m1, m2 = st.columns(2)
+        m1,m2 = st.columns(2)
         m1.metric("Nombre de commandes", len(orders))
         m2.metric("Chiffre d'affaires", f"{ca:,} DA")
         st.download_button("⬇️ Télécharger les commandes (JSON)",
@@ -345,17 +376,16 @@ elif "Commandes" in st.session_state.page:
                            file_name="commandes.json", mime="application/json")
         st.markdown("---")
         for o in reversed(orders):
-            articles = "<br>".join(f"• {it['emoji']} {it['name']} × {it['qty']} = {it['subtotal']:,} DA"
-                                   for it in o["items"])
-            liv = "Offerte 🎁" if o.get("delivery_fee", 0) == 0 else f"{o.get('delivery_fee',0):,} DA"
+            articles = "<br>".join(f"• {it['emoji']} {it['name']} × {it['qty']} = {it['subtotal']:,} DA" for it in o["items"])
+            liv = "Offerte 🎁" if o.get("delivery_fee",0)==0 else f"{o.get('delivery_fee',0):,} DA"
             st.markdown(f"""<div class="order-card">
-                <div style="font-weight:700; color:#1E3A14;">🧾 {o['date']} — {o['total']:,} DA</div>
-                <div style="font-size:.88em; color:#555; margin-top:6px;">
+                <div style="font-weight:700;color:#1E3A14;">🧾 {o['date']} — {o['total']:,} DA</div>
+                <div style="font-size:.88em;color:#555;margin-top:6px;">
                     👤 {o['nom']} &nbsp;|&nbsp; 📞 {o['tel']}<br>
                     📍 {o['adresse']}<br>
-                    🚚 Wilaya : {o.get('wilaya','—')} &nbsp;|&nbsp; Livraison : {liv}<br>
+                    🚚 {o.get('wilaya','—')} &nbsp;|&nbsp; Livraison : {liv}<br>
                     💳 {o['payment']}<br><br>{articles}<br>
-                    <em>Sous-total : {o.get('subtotal', o['total']):,} DA</em>
+                    <em>Sous-total : {o.get('subtotal',o['total']):,} DA</em>
                 </div></div>""", unsafe_allow_html=True)
 
 # ═════════════════════════════════════════════
@@ -369,28 +399,23 @@ elif "Accueil" in st.session_state.page:
         <div class="hero-rule"></div>
         <div class="hero-body">{st.session_state.shop_slogan}</div>
     </div>""", unsafe_allow_html=True)
-
     if st.session_state.shop_description.strip():
         st.markdown(f"""<div class="about-box">
             <div class="sec-eyebrow">À propos</div>
             <div class="about-text">{st.session_state.shop_description}</div>
         </div>""", unsafe_allow_html=True)
-
     st.markdown("""<div class="sec-eyebrow">Sélection</div>
     <div class="sec-title">Nos produits phares</div><div class="sec-rule"></div>""", unsafe_allow_html=True)
     if not st.session_state.products:
         st.info("🛍️ La boutique n'a pas encore de produits.")
     else:
-        for col, p in zip(st.columns(4), st.session_state.products[:4]):
+        for col,p in zip(st.columns(4), st.session_state.products[:4]):
             with col:
-                st.markdown(f"""
-                <div style="background:white; border:1px solid var(--border); border-radius:15px;
-                            padding:20px 14px; text-align:center; margin-bottom:12px;">
-                    <div style="font-size:2.8em; margin-bottom:8px;">{p['emoji']}</div>
+                st.markdown(f"""<div style="background:white;border:1px solid var(--border);border-radius:15px;padding:20px 14px;text-align:center;margin-bottom:12px;">
+                    <div style="font-size:2.8em;margin-bottom:8px;">{p['emoji']}</div>
                     <div class="amber-pill">{p['category']}</div>
-                    <div style="font-family:'Playfair Display',serif; color:#1E3A14; font-size:1em;
-                                font-weight:600; margin:9px 0 5px;">{p['name']}</div>
-                    <div style="font-weight:700; color:#5A8A3C;">{p['price']:,} DA</div>
+                    <div style="font-family:'Playfair Display',serif;color:#1E3A14;font-size:1em;font-weight:600;margin:9px 0 5px;">{p['name']}</div>
+                    <div style="font-weight:700;color:#5A8A3C;">{p['price']:,} DA</div>
                 </div>""", unsafe_allow_html=True)
 
 # ═════════════════════════════════════════════
@@ -402,15 +427,14 @@ elif "Catalogue" in st.session_state.page:
     if not st.session_state.products:
         st.info("🛍️ Aucun produit disponible pour le moment.")
     else:
-        cats = ["Tous"] + list(dict.fromkeys(p["category"] for p in st.session_state.products))
-        cat = st.selectbox("Filtrer par catégorie :", cats)
-        items = st.session_state.products if cat == "Tous" else [p for p in st.session_state.products if p["category"] == cat]
+        cats = ["Tous"]+list(dict.fromkeys(p["category"] for p in st.session_state.products))
+        cat  = st.selectbox("Filtrer par catégorie :", cats)
+        items= st.session_state.products if cat=="Tous" else [p for p in st.session_state.products if p["category"]==cat]
         for start in range(0, len(items), 3):
-            for col, p in zip(st.columns(3, gap="medium"), items[start:start+3]):
+            for col,p in zip(st.columns(3, gap="medium"), items[start:start+3]):
                 with col:
-                    qty = st.session_state.cart.get(p["id"], 0)
-                    st.markdown(f"""
-                    <div class="prod-card">
+                    qty = st.session_state.cart.get(p["id"],0)
+                    st.markdown(f"""<div class="prod-card">
                         <div class="prod-thumb" style="position:relative;">
                             <div class="prod-cat-pill">{p['category']}</div>{thumb_html(p)}
                         </div>
@@ -419,17 +443,15 @@ elif "Catalogue" in st.session_state.page:
                             <div class="prod-desc">{p['description'] or '—'}</div>
                             <div class="prod-price-da">{p['price']:,} DA</div>
                             <div style="font-size:.75em;color:var(--muted);margin-top:6px;">{p['volume']}</div>
-                        </div>
-                    </div>""", unsafe_allow_html=True)
-                    if qty > 0:
+                        </div></div>""", unsafe_allow_html=True)
+                    if qty>0:
                         st.success(f"✅ Panier (×{qty})")
-                        x, y, z = st.columns(3)
-                        if x.button("➖", key=f"d_{p['id']}"): set_qty(p["id"], qty-1); st.rerun()
+                        x,y,z = st.columns(3)
+                        if x.button("➖",key=f"d_{p['id']}"): set_qty(p["id"],qty-1); st.rerun()
                         y.markdown(f"<div style='text-align:center;font-weight:700;padding:8px'>{qty}</div>", unsafe_allow_html=True)
-                        if z.button("➕", key=f"i_{p['id']}"): add_to_cart(p["id"]); st.rerun()
+                        if z.button("➕",key=f"i_{p['id']}"): add_to_cart(p["id"]); st.rerun()
                     else:
-                        if st.button("🛒 Ajouter", key=f"a_{p['id']}"):
-                            add_to_cart(p["id"]); st.rerun()
+                        if st.button("🛒 Ajouter",key=f"a_{p['id']}"): add_to_cart(p["id"]); st.rerun()
                     st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
 # ═════════════════════════════════════════════
@@ -440,46 +462,40 @@ elif "Panier" in st.session_state.page:
         o = st.session_state.order_data
         st.markdown(f"""<div class="success-wrap">
             <div style="font-size:3.5em;">🎉</div>
-            <div style="font-family:'Playfair Display',serif; font-size:1.8em; color:#1E3A14;">Commande confirmée !</div>
-            <div style="color:#7A7A6A; margin-top:8px;">Merci <strong>{o['nom']}</strong>, livraison vers
+            <div style="font-family:'Playfair Display',serif;font-size:1.8em;color:#1E3A14;">Commande confirmée !</div>
+            <div style="color:#7A7A6A;margin-top:8px;">Merci <strong>{o['nom']}</strong>, livraison vers
             <strong>{o['wilaya']}</strong>. Nous vous appelons au <strong>{o['tel']}</strong>.</div>
         </div>""", unsafe_allow_html=True)
-        st.markdown(f"Sous-total : **{o['subtotal']:,} DA** · Livraison : **{o['delivery_fee']:,} DA** · "
-                    f"Total : **{o['total']:,} DA** — {o['date']}")
+        st.markdown(f"Sous-total : **{o['subtotal']:,} DA** · Livraison : **{o['delivery_fee']:,} DA** · Total : **{o['total']:,} DA** — {o['date']}")
         if st.button("🌱 Continuer mes achats"):
-            st.session_state.order_confirmed = False; st.session_state.order_data = None
-            st.session_state.cart = {}; st.rerun()
-
+            st.session_state.order_confirmed=False; st.session_state.order_data=None
+            st.session_state.cart={}; st.rerun()
     elif not st.session_state.cart:
         st.markdown("""<div class="empty-cart"><div style="font-size:3.5em;">🛒</div>
-        <div style="font-family:'Playfair Display',serif; font-size:1.5em; color:#5A8A3C;">Votre panier est vide</div></div>""", unsafe_allow_html=True)
-
+        <div style="font-family:'Playfair Display',serif;font-size:1.5em;color:#5A8A3C;">Votre panier est vide</div></div>""", unsafe_allow_html=True)
     else:
         st.markdown("""<div class="sec-eyebrow">Étape 1 → 2</div>
         <div class="sec-title">Mon panier & commande</div><div class="sec-rule"></div>""", unsafe_allow_html=True)
-        left, right = st.columns([1, 1.05], gap="large")
+        left,right = st.columns([1,1.05], gap="large")
         with left:
-            for pid, qty in list(st.session_state.cart.items()):
+            for pid,qty in list(st.session_state.cart.items()):
                 p = get_product(pid)
                 if not p: continue
                 st.markdown(f"**{p['emoji']} {p['name']}** — {p['price']:,} DA × {qty} = **{p['price']*qty:,} DA**")
-                a, b, c, d = st.columns(4)
-                if a.button("➖", key=f"cd_{pid}"): set_qty(pid, qty-1); st.rerun()
+                a,b,c,d = st.columns(4)
+                if a.button("➖",key=f"cd_{pid}"): set_qty(pid,qty-1); st.rerun()
                 b.markdown(f"<div style='text-align:center;font-weight:700;padding:6px'>{qty}</div>", unsafe_allow_html=True)
-                if c.button("➕", key=f"ci_{pid}"): add_to_cart(pid); st.rerun()
-                if d.button("🗑️", key=f"cx_{pid}"): remove_item(pid); st.rerun()
-
+                if c.button("➕",key=f"ci_{pid}"): add_to_cart(pid); st.rerun()
+                if d.button("🗑️",key=f"cx_{pid}"): remove_item(pid); st.rerun()
             subtotal = cart_total()
             st.markdown("#### 🚚 Livraison")
             wilaya = st.selectbox("Wilaya de livraison", WILAYAS, key="wilaya_select")
-            delivery_fee = int(st.session_state.delivery.get(wilaya, 0))
-            free_applied = st.session_state.free_threshold and subtotal >= st.session_state.free_threshold
-            if free_applied:
-                delivery_fee = 0
-            grand_total = subtotal + delivery_fee
-
+            delivery_fee = int(st.session_state.delivery.get(wilaya,0))
+            free_applied = st.session_state.free_threshold and subtotal>=st.session_state.free_threshold
+            if free_applied: delivery_fee=0
+            grand_total = subtotal+delivery_fee
             ship_txt = "Offerte 🎁" if free_applied else f"{delivery_fee:,} DA"
-            reste = (st.session_state.free_threshold - subtotal) if st.session_state.free_threshold else 0
+            reste = (st.session_state.free_threshold-subtotal) if st.session_state.free_threshold else 0
             hint = (f"<div class='ctl-row'><span>Plus que {reste:,} DA pour la livraison gratuite</span></div>"
                     if (st.session_state.free_threshold and not free_applied) else "")
             st.markdown(f"""<div class="cart-total-box">
@@ -488,31 +504,28 @@ elif "Panier" in st.session_state.page:
                 {hint}
                 <div class="ct-amount">{grand_total:,} DA</div>
             </div>""", unsafe_allow_html=True)
-
         with right:
             with st.form("order"):
                 st.markdown("**📦 Informations de livraison**")
                 nom = st.text_input("Nom & prénom *")
                 tel = st.text_input("Téléphone *")
                 adr = st.text_area("Adresse complète *", height=90)
-                pay = st.radio("Paiement", ["💵 À la livraison", "🏦 Virement CCP/Baridimob"])
-                st.caption(f"Wilaya sélectionnée : **{wilaya}** · Total à payer : **{grand_total:,} DA**")
+                pay = st.radio("Paiement",["💵 À la livraison","🏦 Virement CCP/Baridimob"])
+                st.caption(f"Wilaya : **{wilaya}** · Total : **{grand_total:,} DA**")
                 if st.form_submit_button("✨ Valider ma commande"):
                     if not nom.strip() or not tel.strip() or not adr.strip():
-                        st.error("⚠️ Nom, téléphone et adresse sont obligatoires.")
+                        st.error("⚠️ Nom, téléphone et adresse obligatoires.")
                     else:
-                        items = []
-                        for pid, qty in st.session_state.cart.items():
-                            p = get_product(pid)
-                            if p:
-                                items.append({"name": p["name"], "emoji": p["emoji"], "qty": qty,
-                                              "unit_price": p["price"], "subtotal": p["price"]*qty})
-                        order = {"nom": nom.strip(), "tel": tel.strip(), "adresse": adr.strip(),
-                                 "wilaya": wilaya, "payment": pay, "items": items,
-                                 "subtotal": subtotal, "delivery_fee": delivery_fee,
-                                 "total": grand_total,
-                                 "date": datetime.now().strftime("%d/%m/%Y à %H:%M")}
+                        items=[]
+                        for pid,qty in st.session_state.cart.items():
+                            p=get_product(pid)
+                            if p: items.append({"name":p["name"],"emoji":p["emoji"],"qty":qty,
+                                                "unit_price":p["price"],"subtotal":p["price"]*qty})
+                        order={"nom":nom.strip(),"tel":tel.strip(),"adresse":adr.strip(),
+                               "wilaya":wilaya,"payment":pay,"items":items,
+                               "subtotal":subtotal,"delivery_fee":delivery_fee,"total":grand_total,
+                               "date":datetime.now().strftime("%d/%m/%Y à %H:%M")}
                         save_order(order)
-                        st.session_state.order_data = order
-                        st.session_state.order_confirmed = True
+                        st.session_state.order_data=order
+                        st.session_state.order_confirmed=True
                         st.rerun()
