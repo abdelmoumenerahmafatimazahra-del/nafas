@@ -72,7 +72,12 @@ html,.stApp{background:var(--ivory); font-family:'Lato',sans-serif; color:var(--
 .stButton>button{background:linear-gradient(135deg,var(--forest),var(--sage))!important; color:#F0ECE4!important; border:none!important; border-radius:30px!important; padding:10px 24px!important; font-weight:700!important; letter-spacing:1.2px!important; text-transform:uppercase!important; width:100%!important; transition:all .25s!important;}
 .stButton>button:hover{background:linear-gradient(135deg,var(--sage),var(--mint))!important; transform:translateY(-2px)!important;}
 .amber-pill{display:inline-block; background:var(--amber-lt); color:var(--amber); font-size:.72em; font-weight:700; letter-spacing:1px; padding:3px 12px; border-radius:20px; border:1px solid rgba(201,145,74,.25);}
-
+[data-testid="stSidebarCollapseButton"]{display:none!important;}
+[data-testid="collapsedControl"]{display:none!important;}
+button[kind="header"]{display:none!important;}
+button[kind="headerNoPadding"]{display:none!important;}
+section[data-testid="stSidebar"]{transform:translateX(0px)!important; visibility:visible!important; min-width:240px!important; margin-left:0!important;}
+section[data-testid="stSidebar"][aria-expanded="false"]{transform:translateX(0px)!important;}
 </style>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
