@@ -1,7 +1,7 @@
 # ============================================================
 #  🌬️ NAFAS — E-commerce configurable (v1.0)
-#  ✓ Identité+description ✓ Accès vendeur secret ✓ Sauvegarde
-#  ✓ Commandes ✓ Livraison par wilaya
+#  ✓ Titre d'accueil + identité + description modifiables
+#  ✓ Accès vendeur secret ✓ Sauvegarde ✓ Commandes ✓ Livraison
 # ============================================================
 import streamlit as st
 import base64, os, json
@@ -14,14 +14,13 @@ st.set_page_config(page_title="NAFAS — Ma Boutique", page_icon="🌿",
 #  PARAMÈTRES  (à personnaliser avant de livrer)
 # ─────────────────────────────────────────────
 VENDOR_PASSWORD = "nafas2024"          # 🔑 mot de passe vendeur
-VENDOR_URL_KEY  = "nafas"              # 🔗 lien secret : ...loca.lt/?v=nafas
+VENDOR_URL_KEY  = "nafas"              # 🔗 lien secret : .../?v=nafas
 DATA_DIR = "/content/drive/MyDrive/NAFAS" if os.path.isdir("/content/drive/MyDrive/NAFAS") else "."
 PRODUCTS_FILE = os.path.join(DATA_DIR, "produits.json")
 ORDERS_FILE   = os.path.join(DATA_DIR, "commandes.json")
 DELIVERY_FILE = os.path.join(DATA_DIR, "livraison.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
-# Les 58 wilayas d'Algérie
 WILAYAS = [
  "01 Adrar","02 Chlef","03 Laghouat","04 Oum El Bouaghi","05 Batna","06 Béjaïa",
  "07 Biskra","08 Béchar","09 Blida","10 Bouira","11 Tamanrasset","12 Tébessa",
@@ -75,6 +74,8 @@ def save_settings():
         json.dump({"name": st.session_state.shop_name,
                    "slogan": st.session_state.shop_slogan,
                    "description": st.session_state.shop_description,
+                   "hero_main": st.session_state.shop_hero_main,
+                   "hero_accent": st.session_state.shop_hero_accent,
                    "logo_b64": st.session_state.shop_logo},
                   f, ensure_ascii=False, indent=2)
 
@@ -132,6 +133,10 @@ if "shop_name" not in st.session_state:
     st.session_state.shop_name = _settings.get("name", "NAFAS")
 if "shop_slogan" not in st.session_state:
     st.session_state.shop_slogan = _settings.get("slogan", "Respirez la nature, vivez l'harmonie")
+if "shop_hero_main" not in st.session_state:
+    st.session_state.shop_hero_main = _settings.get("hero_main", "La nature, source de")
+if "shop_hero_accent" not in st.session_state:
+    st.session_state.shop_hero_accent = _settings.get("hero_accent", "bien-être")
 if "shop_description" not in st.session_state:
     st.session_state.shop_description = _settings.get("description",
         "Bienvenue chez NAFAS 🌿\n\n"
@@ -205,7 +210,6 @@ with st.sidebar:
         nav += ["⚙️ Espace Vendeur", "📩 Commandes"]
     st.session_state.page = st.radio("nav", nav, label_visibility="collapsed")
 
-    # 🔑 Accès vendeur visible UNIQUEMENT via le lien secret  ...loca.lt/?v=nafas
     show_access = (st.query_params.get("v") == VENDOR_URL_KEY) or st.session_state.vendor_unlocked
     if show_access:
         st.markdown("<hr style='border:none; border-top:1px solid #C5D8B0; margin:18px 16px;'>", unsafe_allow_html=True)
@@ -233,8 +237,8 @@ if "Espace Vendeur" in st.session_state.page:
     <div class="sec-title">⚙️ Espace Vendeur</div><div class="sec-rule"></div>""", unsafe_allow_html=True)
     st.info("Configurez votre boutique. Pensez à cliquer sur Enregistrer après vos modifications.")
 
-    # ── 🏷️ IDENTITÉ & DESCRIPTION ──
-    st.markdown("### 🏷️ Identité & description de la boutique")
+    # ── 🏷️ IDENTITÉ, TITRE & DESCRIPTION ──
+    st.markdown("### 🏷️ Identité & page d'accueil")
     c1, c2 = st.columns(2)
     with c1:
         st.session_state.shop_name = st.text_input("Nom de la boutique", st.session_state.shop_name)
@@ -246,14 +250,25 @@ if "Espace Vendeur" in st.session_state.page:
         if st.session_state.shop_logo:
             st.image(base64.b64decode(st.session_state.shop_logo), width=90)
 
+    st.markdown("**🖼️ Grand titre de la page d'accueil**")
+    h1, h2 = st.columns([2, 1])
+    with h1:
+        st.session_state.shop_hero_main = st.text_input(
+            "Titre principal", st.session_state.shop_hero_main,
+            help="La grande phrase affichée sur l'accueil.")
+    with h2:
+        st.session_state.shop_hero_accent = st.text_input(
+            "Mot en valeur (couleur ambre)", st.session_state.shop_hero_accent)
+    st.caption(f"Aperçu : {st.session_state.shop_hero_main} *{st.session_state.shop_hero_accent}*.")
+
     st.session_state.shop_description = st.text_area(
-        "📝 Description de la boutique (texte de présentation affiché sur l'accueil)",
+        "📝 Description de la boutique (texte affiché sur l'accueil)",
         st.session_state.shop_description, height=160,
         help="Présentez votre boutique : qui vous êtes, ce que vous vendez, vos valeurs…")
 
     if st.button("💾 Enregistrer l'identité de la boutique"):
         save_settings()
-        st.success("✅ Identité & description enregistrées !")
+        st.success("✅ Identité, titre & description enregistrés !")
 
     st.markdown("---")
     st.markdown("### ➕ Ajouter un produit")
@@ -350,12 +365,11 @@ elif "Accueil" in st.session_state.page:
     st.markdown(f"""
     <div class="hero-wrap">
         <div class="hero-eyebrow">✦ {st.session_state.shop_name} ✦</div>
-        <div class="hero-title">La nature,<br>votre meilleur <em>remède</em>.</div>
+        <div class="hero-title">{st.session_state.shop_hero_main} <em>{st.session_state.shop_hero_accent}</em>.</div>
         <div class="hero-rule"></div>
         <div class="hero-body">{st.session_state.shop_slogan}</div>
     </div>""", unsafe_allow_html=True)
 
-    # 📝 Section "À propos" = description écrite par le vendeur
     if st.session_state.shop_description.strip():
         st.markdown(f"""<div class="about-box">
             <div class="sec-eyebrow">À propos</div>
