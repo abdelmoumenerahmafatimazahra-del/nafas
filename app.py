@@ -12,8 +12,8 @@ from google.oauth2.service_account import Credentials
 st.set_page_config(page_title="NAFAS — Ma Boutique", page_icon="🌿",
                    layout="wide", initial_sidebar_state="expanded")
 
-VENDOR_PASSWORD = "nafas2024"
-VENDOR_URL_KEY  = "nafas"
+VENDOR_PASSWORD = st.secrets.get("VENDOR_PASSWORD", "changeme")
+VENDOR_URL_KEY  = st.secrets.get("VENDOR_URL_KEY", "nafas")
 SHEET_NAME      = "NAFAS_DB"
 
 WILAYAS = [
